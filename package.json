@@ -1,0 +1,14 @@
+{
+  "name": "kensho-backend",
+  "version": "1.0.0",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^4.22.1",
+    "nodemailer": "^8.0.1"
+  }
+}
