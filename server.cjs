@@ -227,7 +227,11 @@ app.get('/read-sent/:country', (req, res) => {
   res.json(content.split('\n').filter((l) => l.includes(`[Pais: ${req.params.country}]`)).map((l) => l.split(' - ')[0].trim()));
 });
 
-app.listen(3001, () => console.log('Servidor atualizado e pronto na porta 3001'));
+const PORT = process.env.PORT || 10000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor atualizado e pronto na porta ${PORT}`);
+});
 
 app.get('/sent-history', (req, res) => {
   const openEvents = readOpenEventRecords();
