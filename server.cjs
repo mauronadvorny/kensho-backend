@@ -233,6 +233,26 @@ app.get('/', (req, res) => {
   res.send('OK');
 });
 
+app.get('/open/:id', (req, res) => {
+  const { id } = req.params;
+  console.log('Open tracking:', id, new Date().toISOString());
+
+  const pixel = Buffer.from(
+    'R0lGODlhAQABAPAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+    'base64'
+  );
+
+  res.set({
+    'Content-Type': 'image/gif',
+    'Content-Length': pixel.length,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  });
+
+  res.end(pixel);
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Servidor atualizado e pronto na porta ${PORT}`);
 });
