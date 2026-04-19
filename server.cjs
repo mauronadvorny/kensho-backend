@@ -229,6 +229,10 @@ app.get('/read-sent/:country', (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 
+app.get('/', (req, res) => {
+  res.send('OK');
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Servidor atualizado e pronto na porta ${PORT}`);
 });
