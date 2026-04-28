@@ -26,9 +26,12 @@ const transporter = nodemailer.createTransport({
 const FILE_PATH = path.join(DATA_DIR, 'sent_history.csv');
 const OPEN_EVENTS_FILE_PATH = path.join(DATA_DIR, 'open_events.csv');
 const CLICK_EVENTS_FILE_PATH = path.join(DATA_DIR, 'click_events.csv');
+const SITE_EVENTS_FILE_PATH = path.join(DATA_DIR, 'site_events.csv');
+const DELIVERY_REPORT_FILE_PATH = path.join(DATA_DIR, 'delivery_report.csv');
 const TRACKING_BASE_URL = (process.env.TRACKING_BASE_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '');
 const TRACKING_EVENTS_URL = (process.env.TRACKING_EVENTS_URL || (TRACKING_BASE_URL ? `${TRACKING_BASE_URL}/open-events` : '')).trim();
 const CLICK_EVENTS_URL = (process.env.CLICK_EVENTS_URL || (TRACKING_BASE_URL ? `${TRACKING_BASE_URL}/click-events` : '')).trim();
+const SITE_EVENTS_URL = (process.env.SITE_EVENTS_URL || (TRACKING_BASE_URL ? `${TRACKING_BASE_URL}/site-events` : '')).trim();
 const DEFAULT_CLICK_TARGET_URL = 'https://getkensho.app';
 const TRACKING_ENABLED = Boolean(
   TRACKING_BASE_URL &&
@@ -59,6 +62,14 @@ if (!fs.existsSync(CLICK_EVENTS_FILE_PATH)) {
   fs.writeFileSync(
     CLICK_EVENTS_FILE_PATH,
     'trackingId,timestamp,target,userAgent,ip\n',
+    'utf-8'
+  );
+}
+
+if (!fs.existsSync(SITE_EVENTS_FILE_PATH)) {
+  fs.writeFileSync(
+    SITE_EVENTS_FILE_PATH,
+    'trackingId,sessionId,eventType,timestamp,path,label,value,durationMs,userAgent,ip,referrer\n',
     'utf-8'
   );
 }
@@ -120,14 +131,39 @@ const readClickEventRecords = () => {
     });
 };
 
-const appendUniqueCsvEvents = (filePath, header, events, fields, keyBuilder) => {
+const readSiteEventRecords = () => {
+  if (!fs.existsSync(SITE_EVENTS_FILE_PATH)) return [];
+
+  const content = fs.readFileSync(SITE_EVENTS_FILE_PATH, 'utf-8');
+  const lines = content.split('\n').slice(1);
+
+  return lines
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const parts = line.match(/"([^"]*)"/g)?.map((p) => p.replace(/"/g, '')) || [];
+
+      return {
+        trackingId: parts[0],
+        sessionId: parts[1],
+        eventType: parts[2],
+        timestamp: parts[3],
+        path: parts[4],
+        label: parts[5],
+        value: parts[6],
+        durationMs: parts[7],
+        userAgent: parts[8],
+        ip: parts[9],
+        referrer: parts[10],
+      };
+    });
+};
+
+const appendUniqueCsvEvents = (filePath, header, events, fields, keyBuilder, readExistingEvents) => {
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, header, 'utf-8');
   }
 
-  const existingEvents = filePath === OPEN_EVENTS_FILE_PATH
-    ? readOpenEventRecords()
-    : readClickEventRecords();
+  const existingEvents = readExistingEvents();
   const existingKeys = new Set(existingEvents.map(keyBuilder));
 
   for (const event of events) {
@@ -168,7 +204,8 @@ const syncRemoteTrackingEvents = async () => {
     'trackingId,timestamp,userAgent,ip\n',
     remoteOpenEvents,
     ['trackingId', 'timestamp', 'userAgent', 'ip'],
-    (event) => `${event.trackingId || ''}|${event.timestamp || ''}|${event.userAgent || ''}|${event.ip || ''}`
+    (event) => `${event.trackingId || ''}|${event.timestamp || ''}|${event.userAgent || ''}|${event.ip || ''}`,
+    readOpenEventRecords
   );
 
   const remoteClickEvents = await fetchRemoteEvents(CLICK_EVENTS_URL);
@@ -177,7 +214,18 @@ const syncRemoteTrackingEvents = async () => {
     'trackingId,timestamp,target,userAgent,ip\n',
     remoteClickEvents,
     ['trackingId', 'timestamp', 'target', 'userAgent', 'ip'],
-    (event) => `${event.trackingId || ''}|${event.timestamp || ''}|${event.target || ''}|${event.userAgent || ''}|${event.ip || ''}`
+    (event) => `${event.trackingId || ''}|${event.timestamp || ''}|${event.target || ''}|${event.userAgent || ''}|${event.ip || ''}`,
+    readClickEventRecords
+  );
+
+  const remoteSiteEvents = await fetchRemoteEvents(SITE_EVENTS_URL);
+  appendUniqueCsvEvents(
+    SITE_EVENTS_FILE_PATH,
+    'trackingId,sessionId,eventType,timestamp,path,label,value,durationMs,userAgent,ip,referrer\n',
+    remoteSiteEvents,
+    ['trackingId', 'sessionId', 'eventType', 'timestamp', 'path', 'label', 'value', 'durationMs', 'userAgent', 'ip', 'referrer'],
+    (event) => `${event.trackingId || ''}|${event.sessionId || ''}|${event.eventType || ''}|${event.timestamp || ''}|${event.path || ''}|${event.label || ''}|${event.value || ''}|${event.durationMs || ''}`,
+    readSiteEventRecords
   );
 };
 
@@ -206,6 +254,18 @@ const buildTrackedHtml = (html, trackingId) => {
   }
 
   return `${htmlWithTrackedLinks || ''}${trackingPixel}`;
+};
+
+const appendTrackingIdToTargetUrl = (targetUrl, trackingId) => {
+  if (!trackingId) return targetUrl;
+
+  try {
+    const url = new URL(targetUrl);
+    url.searchParams.set('trk', trackingId);
+    return url.toString();
+  } catch {
+    return targetUrl;
+  }
 };
 
 const escapeHtml = (value) => String(value ?? '')
@@ -273,6 +333,47 @@ const readSentHistoryRecords = () => {
         trackingId: parts[7] || '',
       };
     });
+};
+
+const writeDeliveryReportCsv = (records) => {
+  const headers = [
+    'name',
+    'outlet',
+    'email',
+    'country',
+    'topic',
+    'timestamp',
+    'status',
+    'trackingId',
+    'trackingEnabled',
+    'opened',
+    'openCount',
+    'firstOpenedAt',
+    'lastOpenedAt',
+    'clicked',
+    'clickCount',
+    'firstClickedAt',
+    'lastClickedAt',
+    'lastClickedTarget',
+    'siteVisited',
+    'siteEventCount',
+    'firstSiteEventAt',
+    'lastSiteEventAt',
+    'lastSiteEventType',
+    'playStoreClickCount',
+    'footerClickCount',
+    'privacyClickCount',
+    'termsClickCount',
+    'contactClickCount',
+    'totalEngagementMs',
+  ];
+
+  const lines = [
+    headers.join(','),
+    ...records.map((record) => headers.map((field) => csvEscape(record[field] ?? '')).join(',')),
+  ];
+
+  fs.writeFileSync(DELIVERY_REPORT_FILE_PATH, `${lines.join('\n')}\n`, 'utf-8');
 };
 
 if (!TRACKING_ENABLED) {
@@ -420,6 +521,7 @@ app.get('/track/click/:trackingId', (req, res) => {
   const safeTarget = /^https:\/\/(www\.)?getkensho\.app\/?/i.test(target)
     ? target
     : DEFAULT_CLICK_TARGET_URL;
+  const targetWithTracking = appendTrackingIdToTargetUrl(safeTarget, trackingId);
 
   if (trackingId) {
     const line = [
@@ -433,7 +535,7 @@ app.get('/track/click/:trackingId', (req, res) => {
     fs.appendFileSync(CLICK_EVENTS_FILE_PATH, line + '\n', 'utf-8');
   }
 
-  res.redirect(302, safeTarget);
+  res.redirect(302, targetWithTracking);
 });
 
 app.get('/open-events', (req, res) => {
@@ -442,6 +544,47 @@ app.get('/open-events', (req, res) => {
 
 app.get('/click-events', (req, res) => {
   res.json(readClickEventRecords());
+});
+
+app.post('/site-event', (req, res) => {
+  const trackingId = String(req.body?.trackingId || '').trim();
+  const eventType = String(req.body?.eventType || '').trim();
+
+  if (!trackingId || !eventType) {
+    return res.status(400).json({ ok: false, error: 'trackingId and eventType are required.' });
+  }
+
+  const sessionId = String(req.body?.sessionId || '').trim();
+  const eventTimestamp = String(req.body?.timestamp || '').trim() || new Date().toISOString();
+  const pathValue = String(req.body?.path || '').trim();
+  const label = String(req.body?.label || '').trim();
+  const value = String(req.body?.value || '').trim();
+  const referrer = String(req.body?.referrer || '').trim();
+  const durationMsRaw = Number(req.body?.durationMs);
+  const durationMs = Number.isFinite(durationMsRaw) && durationMsRaw >= 0
+    ? String(Math.round(durationMsRaw))
+    : '';
+
+  const line = [
+    csvEscape(trackingId),
+    csvEscape(sessionId),
+    csvEscape(eventType),
+    csvEscape(eventTimestamp),
+    csvEscape(pathValue),
+    csvEscape(label),
+    csvEscape(value),
+    csvEscape(durationMs),
+    csvEscape(req.get('user-agent') || ''),
+    csvEscape(req.ip || req.socket?.remoteAddress || ''),
+    csvEscape(referrer),
+  ].join(',');
+
+  fs.appendFileSync(SITE_EVENTS_FILE_PATH, line + '\n', 'utf-8');
+  res.status(200).json({ ok: true });
+});
+
+app.get('/site-events', (req, res) => {
+  res.json(readSiteEventRecords());
 });
 
 app.get('/read-sent/:country', (req, res) => {
@@ -485,6 +628,7 @@ app.get('/sent-history', async (req, res) => {
 
   const openEvents = readOpenEventRecords();
   const clickEvents = readClickEventRecords();
+  const siteEvents = readSiteEventRecords();
   const eventsByTrackingId = openEvents.reduce((acc, event) => {
     if (!event.trackingId) return acc;
     if (!acc[event.trackingId]) acc[event.trackingId] = [];
@@ -497,10 +641,17 @@ app.get('/sent-history', async (req, res) => {
     acc[event.trackingId].push(event);
     return acc;
   }, {});
+  const siteEventsByTrackingId = siteEvents.reduce((acc, event) => {
+    if (!event.trackingId) return acc;
+    if (!acc[event.trackingId]) acc[event.trackingId] = [];
+    acc[event.trackingId].push(event);
+    return acc;
+  }, {});
 
   const records = readSentHistoryRecords().map((record) => {
     const openEventsForRecord = record.trackingId ? (eventsByTrackingId[record.trackingId] || []) : [];
     const clickEventsForRecord = record.trackingId ? (clickEventsByTrackingId[record.trackingId] || []) : [];
+    const siteEventsForRecord = record.trackingId ? (siteEventsByTrackingId[record.trackingId] || []) : [];
     const openTimestamps = openEventsForRecord
       .map((event) => event.timestamp)
       .filter(Boolean)
@@ -509,6 +660,20 @@ app.get('/sent-history', async (req, res) => {
       .map((event) => event.timestamp)
       .filter(Boolean)
       .sort();
+    const siteTimestamps = siteEventsForRecord
+      .map((event) => event.timestamp)
+      .filter(Boolean)
+      .sort();
+    const playStoreClickCount = siteEventsForRecord.filter((event) => event.eventType === 'cta_click' && event.label === 'google_play').length;
+    const privacyClickCount = siteEventsForRecord.filter((event) => event.eventType === 'footer_click' && event.label === 'privacy_policy').length;
+    const termsClickCount = siteEventsForRecord.filter((event) => event.eventType === 'footer_click' && event.label === 'terms_of_use').length;
+    const contactClickCount = siteEventsForRecord.filter((event) => event.eventType === 'footer_click' && event.label === 'contact_email').length;
+    const footerClickCount = privacyClickCount + termsClickCount + contactClickCount;
+    const totalEngagementMs = siteEventsForRecord.reduce((sum, event) => sum + Number(event.durationMs || 0), 0);
+    const lastSiteEvent = siteEventsForRecord
+      .slice()
+      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
+      .pop();
 
     return {
       ...record,
@@ -522,8 +687,21 @@ app.get('/sent-history', async (req, res) => {
       lastClickedAt: clickTimestamps[clickTimestamps.length - 1] || '',
       clicked: clickEventsForRecord.length > 0,
       lastClickedTarget: clickEventsForRecord[clickEventsForRecord.length - 1]?.target || '',
+      siteVisited: siteEventsForRecord.length > 0,
+      siteEventCount: siteEventsForRecord.length,
+      firstSiteEventAt: siteTimestamps[0] || '',
+      lastSiteEventAt: siteTimestamps[siteTimestamps.length - 1] || '',
+      lastSiteEventType: lastSiteEvent?.eventType || '',
+      playStoreClickCount,
+      footerClickCount,
+      privacyClickCount,
+      termsClickCount,
+      contactClickCount,
+      totalEngagementMs,
     };
   });
+
+  writeDeliveryReportCsv(records);
 
   res.json(records);
 });
