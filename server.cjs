@@ -236,11 +236,20 @@ const buildClickTrackingUrl = (trackingId, targetUrl = DEFAULT_CLICK_TARGET_URL)
   return `${TRACKING_BASE_URL}/track/click/${trackingId}?to=${encodedTarget}`;
 };
 
+const trimTrailingUrlPunctuation = (value) => String(value || '').replace(/[.,;:!?)]*$/g, '');
+
 const rewriteTrackedLinks = (html, trackingId) => {
   if (!TRACKING_ENABLED || !trackingId || typeof html !== 'string') return html;
 
-  const trackedUrl = buildClickTrackingUrl(trackingId, DEFAULT_CLICK_TARGET_URL);
-  return html.replace(/href="https:\/\/getkensho\.app\/?"/g, `href="${trackedUrl}"`);
+  return html.replace(/href="([^"]+)"/g, (match, href) => {
+    const normalizedHref = trimTrailingUrlPunctuation(href);
+    if (!/^https:\/\/getkensho\.app\/?$/i.test(normalizedHref)) {
+      return match;
+    }
+
+    const trackedUrl = buildClickTrackingUrl(trackingId, normalizedHref);
+    return `href="${trackedUrl}"`;
+  });
 };
 
 const buildTrackedHtml = (html, trackingId) => {
@@ -277,7 +286,11 @@ const escapeHtml = (value) => String(value ?? '')
 
 const linkifyUrls = (value) => value.replace(
   /(https?:\/\/[^\s<]+)/g,
-  '<a href="$1" style="color:#2563eb;text-decoration:underline;">$1</a>'
+  (fullMatch) => {
+    const cleanUrl = trimTrailingUrlPunctuation(fullMatch);
+    const trailingChars = fullMatch.slice(cleanUrl.length);
+    return `<a href="${cleanUrl}" style="color:#2563eb;text-decoration:underline;">${cleanUrl}</a>${trailingChars}`;
+  }
 );
 
 const normalizePlainTextEmail = (body) => {
