@@ -1,9 +1,13 @@
 {
-  "name": "kensho-backend",
+  "name": "emotionlogic-insurance-backend",
   "version": "1.0.0",
+  "description": "Backend for EmotionLogic insurance outreach, sending, history, and open tracking.",
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "cors": "^2.8.6",

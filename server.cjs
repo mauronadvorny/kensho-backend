@@ -15,21 +15,33 @@ app.use(cors());
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true').toLowerCase() === 'true';
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = String(process.env.SMTP_PASS || '').replace(/\s+/g, '');
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_SECURE,
   auth: {
-    user: process.env.GMAIL_USER || '',
-    pass: String(process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, ''),
+    user: SMTP_USER,
+    pass: SMTP_PASS,
   },
 });
 
 const FILE_PATH = path.join(DATA_DIR, 'sent_history.csv');
 const OPEN_EVENTS_FILE_PATH = path.join(DATA_DIR, 'open_events.csv');
 const CLICK_EVENTS_FILE_PATH = path.join(DATA_DIR, 'click_events.csv');
+const DELIVERY_REPORT_FILE_PATH = path.join(DATA_DIR, 'delivery_report.csv');
 const TRACKING_BASE_URL = (process.env.TRACKING_BASE_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '');
 const TRACKING_EVENTS_URL = (process.env.TRACKING_EVENTS_URL || (TRACKING_BASE_URL ? `${TRACKING_BASE_URL}/open-events` : '')).trim();
 const CLICK_EVENTS_URL = (process.env.CLICK_EVENTS_URL || (TRACKING_BASE_URL ? `${TRACKING_BASE_URL}/click-events` : '')).trim();
-const DEFAULT_CLICK_TARGET_URL = 'https://getkensho.app';
+const EMAIL_LOGO_CID = 'emotionlogic-logo';
+const EMAIL_LOGO_FILE_PATH = process.env.EMAIL_LOGO_FILE_PATH || path.join(__dirname, '..', 'assets', 'email-logo.png');
+const DEFAULT_CLICK_TARGET_URL = 'https://emotionlogic.ai/insurance/';
 const TRACKING_ENABLED = Boolean(
   TRACKING_BASE_URL &&
   !/localhost|127\.0\.0\.1/i.test(TRACKING_BASE_URL)
@@ -97,6 +109,28 @@ const readOpenEventRecords = () => {
         ip: parts[3],
       };
     });
+};
+
+const readRemoteOpenEventRecords = async () => {
+  if (!TRACKING_EVENTS_URL || /localhost|127\.0\.0\.1/i.test(TRACKING_EVENTS_URL)) return [];
+  if (typeof fetch !== 'function') return [];
+
+  try {
+    const response = await fetch(TRACKING_EVENTS_URL, {
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      console.warn(`Nao foi possivel carregar eventos remotos de tracking: HTTP ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.warn('Nao foi possivel carregar eventos remotos de tracking:', error.message);
+    return [];
+  }
 };
 
 const readClickEventRecords = () => {
@@ -192,7 +226,7 @@ const rewriteTrackedLinks = (html, trackingId) => {
   if (!TRACKING_ENABLED || !trackingId || typeof html !== 'string') return html;
 
   const trackedUrl = buildClickTrackingUrl(trackingId, DEFAULT_CLICK_TARGET_URL);
-  return html.replace(/href="https:\/\/getkensho\.app\/?"/g, `href="${trackedUrl}"`);
+  return html.replace(/href="https:\/\/emotionlogic\.ai\/insurance\/?"/g, `href="${trackedUrl}"`);
 };
 
 const buildTrackedHtml = (html, trackingId) => {
@@ -229,6 +263,7 @@ const normalizePlainTextEmail = (body) => {
   return text
     .replace(/([.!?。！？।])\s+(?=\S)/g, '$1\n\n')
     .replace(/\s+(?=(Sincerely|Best regards|Kind regards|Regards|Atenciosamente|Cordialmente|Saludos|Cordialement|भवदीय|בברכה|مع تحياتي)\b)/gi, '\n\n')
+    .replace(/\s+(?=(Mauro Nadav|Solutions Director|EmotionLogic|E:|T:|Schedule a chat:|Agende uma conversa:|LinkedIn:))/g, '\n')
     .replace(/\s+(?=(PS:|P\.S\.|P\.S:|पुनश्च:|נ\.ב\.|ملاحظة:))/gi, '\n\n')
     .replace(/\n{3,}/g, '\n\n');
 };
@@ -238,10 +273,21 @@ const buildEmailHtml = (body) => {
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
+  let logoInserted = false;
 
   const htmlParagraphs = paragraphs.map((paragraph) => {
-    const escapedParagraph = linkifyUrls(escapeHtml(paragraph)).replace(/\n/g, '<br>');
-    return `<p style="margin:0 0 14px 0;">${escapedParagraph}</p>`;
+    const htmlLines = paragraph.split('\n').map((line) => {
+      const escapedLine = linkifyUrls(escapeHtml(line));
+
+      if (!logoInserted && line.trim() === 'EmotionLogic' && fs.existsSync(EMAIL_LOGO_FILE_PATH)) {
+        logoInserted = true;
+        return `${escapedLine}<br><img src="cid:${EMAIL_LOGO_CID}" alt="" width="160" style="display:block;width:160px;max-width:160px;height:auto;border:0;margin:8px 0 10px 0;">`;
+      }
+
+      return escapedLine;
+    });
+
+    return `<p style="margin:0 0 14px 0;">${htmlLines.join('<br>')}</p>`;
   });
 
   return `
@@ -249,6 +295,16 @@ const buildEmailHtml = (body) => {
       ${htmlParagraphs.join('')}
     </div>
   `;
+};
+
+const getEmailAttachments = () => {
+  if (!fs.existsSync(EMAIL_LOGO_FILE_PATH)) return [];
+
+  return [{
+    filename: 'emotionlogic-logo.png',
+    path: EMAIL_LOGO_FILE_PATH,
+    cid: EMAIL_LOGO_CID,
+  }];
 };
 
 const readSentHistoryRecords = () => {
@@ -273,6 +329,36 @@ const readSentHistoryRecords = () => {
         trackingId: parts[7] || '',
       };
     });
+};
+
+const writeDeliveryReportCsv = (records) => {
+  const headers = [
+    'name',
+    'outlet',
+    'email',
+    'country',
+    'topic',
+    'timestamp',
+    'status',
+    'trackingId',
+    'trackingEnabled',
+    'opened',
+    'openCount',
+    'firstOpenedAt',
+    'lastOpenedAt',
+    'clicked',
+    'clickCount',
+    'firstClickedAt',
+    'lastClickedAt',
+    'lastClickedTarget',
+  ];
+
+  const lines = [
+    headers.join(','),
+    ...records.map((record) => headers.map((field) => csvEscape(record[field] ?? '')).join(',')),
+  ];
+
+  fs.writeFileSync(DELIVERY_REPORT_FILE_PATH, `${lines.join('\n')}\n`, 'utf-8');
 };
 
 if (!TRACKING_ENABLED) {
@@ -320,11 +406,12 @@ app.post('/send-bulk', async (req, res) => {
           console.log(`ENVIANDO EMAIL INDIVIDUAL PARA: ${email} (${emailType})`);
 
           await transporter.sendMail({
-            from: process.env.GMAIL_USER,
+            from: SMTP_FROM,
             to: email,
             subject: j.pitchSubject,
             text: normalizePlainTextEmail(j.pitchBody),
             html: buildTrackedHtml(buildEmailHtml(j.pitchBody), trackingId),
+            attachments: getEmailAttachments(),
           });
 
           results.push({ name: j.name, email, status: 'sent', emailType, trackingEnabled: TRACKING_ENABLED, trackingId });
@@ -361,7 +448,7 @@ app.post('/send-bulk', async (req, res) => {
 app.post('/send-test', async (req, res) => {
   try {
     const { pitchSubject, pitchBody, to } = req.body || {};
-    const testRecipient = String(to || process.env.GMAIL_USER || '').trim();
+    const testRecipient = String(to || SMTP_FROM || SMTP_USER || '').trim();
 
     if (!testRecipient || !isValidEmail(testRecipient)) {
       return res.status(400).json({ ok: false, error: 'Test recipient email is not configured.' });
@@ -374,11 +461,12 @@ app.post('/send-test', async (req, res) => {
     const trackingId = TRACKING_ENABLED ? crypto.randomUUID() : '';
 
     await transporter.sendMail({
-      from: process.env.GMAIL_USER,
+      from: SMTP_FROM,
       to: testRecipient,
       subject: `[TEST] ${pitchSubject}`,
       text: normalizePlainTextEmail(pitchBody),
       html: buildTrackedHtml(buildEmailHtml(pitchBody), trackingId),
+      attachments: getEmailAttachments(),
     });
 
     res.status(200).json({
@@ -417,7 +505,7 @@ app.get('/track/open/:trackingId', (req, res) => {
 app.get('/track/click/:trackingId', (req, res) => {
   const trackingId = String(req.params.trackingId || '').trim();
   const target = String(req.query.to || DEFAULT_CLICK_TARGET_URL).trim();
-  const safeTarget = /^https:\/\/(www\.)?getkensho\.app\/?/i.test(target)
+  const safeTarget = /^https:\/\/(www\.)?emotionlogic\.ai\/insurance\/?/i.test(target)
     ? target
     : DEFAULT_CLICK_TARGET_URL;
 
@@ -450,7 +538,7 @@ app.get('/read-sent/:country', (req, res) => {
   res.json(content.split('\n').filter((l) => l.includes(`[Pais: ${req.params.country}]`)).map((l) => l.split(' - ')[0].trim()));
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3003;
 
 app.get('/', (req, res) => {
   res.send('OK');
@@ -525,5 +613,6 @@ app.get('/sent-history', async (req, res) => {
     };
   });
 
+  writeDeliveryReportCsv(records);
   res.json(records);
 });
